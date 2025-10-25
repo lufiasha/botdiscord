@@ -4,7 +4,7 @@ from discord_interactions import verify_key_decorator, InteractionType, Interact
 
 app = Flask(__name__)
 
-# Получаем из переменных окружения (установим позже на Render)
+# Получаем публичный ключ из переменных окружения
 PUBLIC_KEY = os.environ['DISCORD_PUBLIC_KEY']
 
 @app.route('/interactions', methods=['POST'])
@@ -26,3 +26,8 @@ def interactions():
 
     # Для других типов (например, ping от Discord)
     return jsonify({'type': InteractionResponseType.PONG})
+
+# Запуск сервера
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
