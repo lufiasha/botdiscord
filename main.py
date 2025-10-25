@@ -10,13 +10,17 @@ PUBLIC_KEY = os.environ['DISCORD_PUBLIC_KEY']
 @app.route('/interactions', methods=['POST'])
 @verify_key_decorator(PUBLIC_KEY)
 def interactions():
+    print("✅ Получен запрос от Discord")
     data = request.json
+    print("Данные запроса:", data)
 
     # Проверяем тип взаимодействия
     if data['type'] == InteractionType.APPLICATION_COMMAND:
         command_name = data['data']['name']
+        print(f"Вызов команды: {command_name}")
 
         if command_name == 'ping':
+            print("Отправляем ответ...")
             return jsonify({
                 'type': InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
                 'data': {
@@ -25,6 +29,7 @@ def interactions():
             })
 
     # Для других типов (например, ping от Discord)
+    print("Отправляем PONG...")
     return jsonify({'type': InteractionResponseType.PONG})
 
 # Запуск сервера
