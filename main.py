@@ -2,6 +2,7 @@
 import os
 import random
 import psycopg2
+import requests
 from urllib.parse import urlparse
 from flask import Flask, request, jsonify
 from discord_interactions import verify_key_decorator, InteractionType, InteractionResponseType
@@ -11,13 +12,39 @@ app = Flask(__name__)
 # === Настройки Discord ===
 DISCORD_PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY")
 if not DISCORD_PUBLIC_KEY:
-    raise ValueError("❌ Переменная DISCORD_PUBLIC_KEY не установлена в Render")
+    raise ValueError("❌ DISCORD_PUBLIC_KEY не установлен в Render")
+
+# === Регистрация slash-команд (выполняется один раз при старте) ===
+def register_commands():
+    APP_ID = os.getenv("APP_ID")
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+    if not APP_ID or not BOT_TOKEN:
+        print("⚠️ APP_ID или BOT_TOKEN не заданы — регистрация команд пропущена")
+        return
+
+    commands = [
+        {"name": "awaken", "description": "Начать новый цикл"},
+        {"name": "explore", "description": "Исследовать подвал"},
+        {"name": "rest", "description": "Отдохнуть и восстановить рассудок"}
+    ]
+
+    url = f"https://discord.com/api/v10/applications/{APP_ID}/commands"
+    headers = {"Authorization": f"Bot {BOT_TOKEN}"}
+
+    print("📤 Регистрация slash-команд...")
+    for cmd in commands:
+        try:
+            res = requests.post(url, json=cmd, headers=headers, timeout=10)
+            print(f"   /{cmd['name']} → {res.status_code}")
+        except Exception as e:
+            print(f"   Ошибка при регистрации /{cmd['name']}: {e}")
 
 # === Подключение к БД ===
 def get_db_connection():
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
-        raise ValueError("❌ Переменная DATABASE_URL не установлена в Render")
+        raise ValueError("❌ DATABASE_URL не установлен в Render")
     url = urlparse(db_url)
     return psycopg2.connect(
         host=url.hostname,
@@ -112,9 +139,10 @@ def update_player(user_id, sanity=None, memories=None, cycle=None, max_sanity=No
     cur.close()
     conn.close()
 
-# === Инициализация БД при запуске приложения ===
+# === Инициализация при старте ===
 with app.app_context():
     init_db()
+    register_commands()  # ← Регистрация команд при запуске
 
 # === Обработка запросов от Discord ===
 @app.route('/interactions', methods=['POST'])
@@ -177,6 +205,6 @@ def interactions():
 
     return jsonify({'type': InteractionResponseType.PONG})
 
-# === Запуск сервера (обязательно без if __name__ == '__main__' для Render) ===
+# === Запуск сервера ===
 port = int(os.environ.get('PORT', 10000))
 app.run(host='0.0.0.0', port=port)
