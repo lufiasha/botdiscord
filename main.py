@@ -1,6 +1,5 @@
 # main.py
 import os
-import json
 import random
 import psycopg2
 from urllib.parse import urlparse
@@ -12,13 +11,13 @@ app = Flask(__name__)
 # === Настройки Discord ===
 DISCORD_PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY")
 if not DISCORD_PUBLIC_KEY:
-    raise ValueError("❌ DISCORD_PUBLIC_KEY не установлен в Render")
+    raise ValueError("❌ Переменная DISCORD_PUBLIC_KEY не установлена в Render")
 
 # === Подключение к БД ===
 def get_db_connection():
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
-        raise ValueError("❌ DATABASE_URL не установлен в Render")
+        raise ValueError("❌ Переменная DATABASE_URL не установлена в Render")
     url = urlparse(db_url)
     return psycopg2.connect(
         host=url.hostname,
@@ -28,7 +27,7 @@ def get_db_connection():
         password=url.password
     )
 
-# === Автоматическое создание таблицы при первом запуске ===
+# === Создание таблицы при старте ===
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
@@ -86,31 +85,38 @@ def get_or_create_player(user_id, username):
     conn.close()
     return player
 
-# === Обновить игрока ===
-def update_player(user_id, **kwargs):
-    if not kwargs:
-        return
-    conn = get_db_connection()
-    cur = conn.cursor()
+# === Обновить данные игрока ===
+def update_player(user_id, sanity=None, memories=None, cycle=None, max_sanity=None):
     updates = []
     values = []
-    for key, value in kwargs.items():
-        if key in ("sanity", "memories", "cycle", "max_sanity"):
-            updates.append(f"{key} = %s")
-            values.append(value)
-    if updates:
-        values.append(user_id)
-        query = f"UPDATE players SET {', '.join(updates)}, updated_at = NOW() WHERE user_id = %s"
-        cur.execute(query, values)
-        conn.commit()
+    if sanity is not None:
+        updates.append("sanity = %s")
+        values.append(max(0, sanity))
+    if memories is not None:
+        updates.append("memories = %s")
+        values.append(memories)
+    if cycle is not None:
+        updates.append("cycle = %s")
+        values.append(cycle)
+    if max_sanity is not None:
+        updates.append("max_sanity = %s")
+        values.append(max_sanity)
+    if not updates:
+        return
+    values.append(user_id)
+    query = f"UPDATE players SET {', '.join(updates)}, updated_at = NOW() WHERE user_id = %s"
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(query, values)
+    conn.commit()
     cur.close()
     conn.close()
 
-# === Инициализация БД при запуске Flask ===
+# === Инициализация БД при запуске приложения ===
 with app.app_context():
     init_db()
 
-# === Обработка команд ===
+# === Обработка запросов от Discord ===
 @app.route('/interactions', methods=['POST'])
 @verify_key_decorator(DISCORD_PUBLIC_KEY)
 def interactions():
@@ -123,33 +129,43 @@ def interactions():
         player = get_or_create_player(user_id, username)
 
         if command_name == "awaken":
-            msg = f"🌀 Цикл #{player['cycle']}\n🧠 Рассудок: {player['sanity']}/{player['max_sanity']}\n📜 Воспоминаний: {player['memories']}\n\nТы просыпаешься в подвале..."
-        
+            msg = (
+                f"🌀 Цикл #{player['cycle']}\n"
+                f"🧠 Рассудок: {player['sanity']}/{player['max_sanity']}\n"
+                f"📜 Воспоминаний: {player['memories']}\n\n"
+                "Ты просыпаешься в подвале. Стены дышат. Что дальше?"
+            )
+
         elif command_name == "explore":
             if player['sanity'] <= 0:
-                msg = "Ты без сознания... Используй `/awaken`."
+                msg = "Ты без сознания... Используй `/awaken`, чтобы начать цикл заново."
             else:
                 events = [
-                    {"text": "Нашёл записку! +2 воспоминания.", "memories": 2},
+                    {"text": "Ты нашёл обрывок дневника! +2 воспоминания.", "memories": 2},
                     {"text": "Стены шепчут... −10 рассудка.", "sanity": -10},
-                    {"text": "Амулет силы! +5 к макс. рассудку.", "max_sanity": 5},
+                    {"text": "В углу — странный амулет. +5 к макс. рассудку!", "max_sanity": 5},
+                    {"text": "Ты вспомнил лицо матери... +5 воспоминаний, но больно. −15 рассудка.", "memories": 5, "sanity": -15}
                 ]
                 event = random.choice(events)
+                new_san = player['sanity'] + event.get("sanity", 0)
+                new_mem = player['memories'] + event.get("memories", 0)
+                new_max = player['max_sanity'] + event.get("max_sanity", 0)
+
                 update_player(
                     user_id,
-                    sanity=player['sanity'] + event.get("sanity", 0),
-                    memories=player['memories'] + event.get("memories", 0),
-                    max_sanity=player['max_sanity'] + event.get("max_sanity", 0)
+                    sanity=new_san,
+                    memories=new_mem,
+                    max_sanity=new_max if "max_sanity" in event else None
                 )
                 msg = event["text"]
 
         elif command_name == "rest":
-            healed = min(20, player['max_sanity'] - player['sanity'])
-            if healed > 0:
-                update_player(user_id, sanity=player['sanity'] + healed)
-                msg = f"🕯️ Отдых... +{healed} рассудка."
+            if player['sanity'] >= player['max_sanity']:
+                msg = "Ты отдохнул... но уже в порядке."
             else:
-                msg = "Ты уже в порядке."
+                healed = min(20, player['max_sanity'] - player['sanity'])
+                update_player(user_id, sanity=player['sanity'] + healed)
+                msg = f"🕯️ Ты немного отдохнул. +{healed} рассудка."
 
         else:
             msg = "Неизвестная команда."
@@ -160,3 +176,7 @@ def interactions():
         })
 
     return jsonify({'type': InteractionResponseType.PONG})
+
+# === Запуск сервера (обязательно без if __name__ == '__main__' для Render) ===
+port = int(os.environ.get('PORT', 10000))
+app.run(host='0.0.0.0', port=port)
