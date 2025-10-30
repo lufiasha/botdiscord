@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 app = Flask(__name__)
 
 # === Discord Public Key из твоего Developer Portal ===
-DISCORD_PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY", "34d3c6086fed9cb712e1bc84e4b9ea82aa29eeb977815e115659102509a23c31")
+DISCORD_PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY", "34d3c6086fed9cb712e1bc84a4b9ea82aa29eeb977815e115659102509a23c31")
 
 if not DISCORD_PUBLIC_KEY:
     raise ValueError("❌ DISCORD_PUBLIC_KEY не установлен")
@@ -289,4 +289,5 @@ with app.app_context():
 
 port = int(os.environ.get('PORT', 10000))
 app.run(host='0.0.0.0', port=port)
+
 
