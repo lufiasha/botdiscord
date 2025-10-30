@@ -6,11 +6,10 @@ from urllib.parse import urlparse
 from flask import Flask, request, jsonify
 from discord_interactions import verify_key_decorator, InteractionType, InteractionResponseType
 from datetime import datetime, timedelta
-import traceback  # для вывода полной ошибки
+import traceback
 
 app = Flask(__name__)
 
-# === Discord Public Key ===
 DISCORD_PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY", "34d3c6086fed9cb712e1bc84e4b9ea82aa29eeb977815e115659102509a23c31")
 
 if not DISCORD_PUBLIC_KEY:
@@ -18,7 +17,6 @@ if not DISCORD_PUBLIC_KEY:
 
 print("✅ Бот запущен. Ожидание запросов...")
 
-# === Предметы и мобы ===
 ITEMS = {
     "rusty_sword": {"name": "Ржавый меч", "type": "weapon", "attack": 5},
     "iron_sword": {"name": "Железный меч", "type": "weapon", "attack": 12},
@@ -41,7 +39,6 @@ BOSSES = [
     {"name": "Циклоп", "level_req": 15, "xp": 1000, "gold": 250, "drops": ["obsidian_plate", "steel_blade"], "cooldown_min": 45}
 ]
 
-# === БД ===
 def get_db():
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
@@ -89,7 +86,6 @@ def init_db():
     conn.close()
     print("✅ БД инициализирована")
 
-# === Вспомогательные функции (без изменений) ===
 def create_player(user_id, username):
     conn = get_db()
     cur = conn.cursor()
@@ -161,7 +157,6 @@ def get_stats(user_id):
     defense = ITEMS.get(equip["armor"], {}).get("defense", 0)
     return {"attack": attack, "defense": defense}
 
-# === Обработка команд с логированием ===
 @app.route('/interactions', methods=['POST'])
 @verify_key_decorator(DISCORD_PUBLIC_KEY)
 def interactions():
@@ -174,16 +169,17 @@ def interactions():
             print("🏓 Ответ на PING")
             return jsonify({'type': InteractionResponseType.PONG})
 
-               if data['type'] == InteractionType.APPLICATION_COMMAND:
+        if data['type'] == InteractionType.APPLICATION_COMMAND:
             cmd = data['data']['name']
-            # Получаем user_id и username из member (если на сервере) или user (если в ЛС)
-            member_data = data.get('member')
-            if member_data:
-                user_id = int(member_data['user']['id'])
-                username = member_data['user']['username']
+            
+            # Обработка user_id и username для ЛС и серверов
+            if 'member' in data and 'user' in data['member']:
+                user_id = int(data['member']['user']['id'])
+                username = data['member']['user']['username']
             else:
                 user_id = int(data['user']['id'])
                 username = data['user']['username']
+            
             print(f"👤 Пользователь: {username} ({user_id})")
             print(f"💬 Команда: /{cmd}")
 
@@ -329,7 +325,6 @@ def interactions():
 
     return jsonify({'type': InteractionResponseType.PONG})
 
-# === Запуск ===
 with app.app_context():
     init_db()
 
