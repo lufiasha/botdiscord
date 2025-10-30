@@ -17,6 +17,7 @@ if not DISCORD_PUBLIC_KEY:
 
 print("✅ Бот запущен. Ожидание запросов...")
 
+# === Предметы ===
 ITEMS = {
     "rusty_sword": {"name": "Ржавый меч", "type": "weapon", "attack": 5},
     "iron_sword": {"name": "Железный меч", "type": "weapon", "attack": 12},
@@ -24,19 +25,22 @@ ITEMS = {
     "leather_armor": {"name": "Кожаный доспех", "type": "armor", "defense": 3},
     "iron_armor": {"name": "Железный доспех", "type": "armor", "defense": 8},
     "obsidian_plate": {"name": "Обсидиановая броня", "type": "armor", "defense": 15},
-    "healing_herb": {"name": "Целебная трава", "type": "consumable", "effect": "heal_20"}
+    "healing_herb": {"name": "Целебная трава", "type": "consumable", "effect": "heal_20"},
+    "loot_box": {"name": "Ящик с добычей", "type": "box", "description": "Содержит случайный предмет"}
 }
 
+# === Мобы ===
 MOBS = [
     {"name": "Теневой Страж", "xp": 15, "gold": 3, "drops": ["rusty_sword"]},
     {"name": "Хранитель Порога", "xp": 30, "gold": 8, "drops": ["iron_sword", "leather_armor"]}
 ]
 
+# === Боссы ===
 BOSSES = [
-    {"name": "Эхо Ты", "level_req": 1, "xp": 100, "gold": 25, "drops": ["iron_sword"], "cooldown_min": 15},
-    {"name": "Страж Времени", "level_req": 5, "xp": 250, "gold": 60, "drops": ["steel_blade", "iron_armor"], "cooldown_min": 25},
-    {"name": "Тень Академии", "level_req": 10, "xp": 500, "gold": 120, "drops": ["obsidian_plate"], "cooldown_min": 35},
-    {"name": "Циклоп", "level_req": 15, "xp": 1000, "gold": 250, "drops": ["obsidian_plate", "steel_blade"], "cooldown_min": 45}
+    {"name": "Эхо Ты", "level_req": 1, "xp": 100, "gold": 25, "drops": ["iron_sword", "loot_box"], "cooldown_min": 15},
+    {"name": "Страж Времени", "level_req": 5, "xp": 250, "gold": 60, "drops": ["steel_blade", "iron_armor", "loot_box"], "cooldown_min": 25},
+    {"name": "Тень Академии", "level_req": 10, "xp": 500, "gold": 120, "drops": ["obsidian_plate", "loot_box"], "cooldown_min": 35},
+    {"name": "Циклоп", "level_req": 15, "xp": 1000, "gold": 250, "drops": ["obsidian_plate", "steel_blade", "loot_box"], "cooldown_min": 45}
 ]
 
 def get_db():
@@ -125,6 +129,15 @@ def add_item(user_id, item_id, count=1):
     cur.close()
     conn.close()
 
+def get_inventory(user_id):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT item_id, count FROM inventory WHERE user_id = %s", (user_id,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return {row[0]: row[1] for row in rows}
+
 def get_equipment(user_id):
     conn = get_db()
     cur = conn.cursor()
@@ -138,23 +151,29 @@ def equip_item(user_id, item_id):
     if item_id not in ITEMS:
         return False
     item = ITEMS[item_id]
+    if item["type"] not in ("weapon", "armor"):
+        return False
     conn = get_db()
     cur = conn.cursor()
     if item["type"] == "weapon":
         cur.execute("UPDATE equipment SET weapon = %s WHERE user_id = %s", (item_id, user_id))
     elif item["type"] == "armor":
         cur.execute("UPDATE equipment SET armor = %s WHERE user_id = %s", (item_id, user_id))
-    else:
-        return False
     conn.commit()
     cur.close()
     conn.close()
     return True
 
-def get_stats(user_id):
+def get_stats(user_id, player=None):
+    if player is None:
+        player = get_player(user_id)
     equip = get_equipment(user_id)
-    attack = ITEMS.get(equip["weapon"], {}).get("attack", 0)
-    defense = ITEMS.get(equip["armor"], {}).get("defense", 0)
+    base_bonus = player["level"] // 5  # +1 каждые 5 уровней
+    attack = base_bonus + ITEMS.get(equip["weapon"], {}).get("attack", 0)
+    defense = base_bonus + ITEMS.get(equip["armor"], {}).get("defense", 0)
+    # Минимум 1
+    attack = max(1, attack)
+    defense = max(1, defense)
     return {"attack": attack, "defense": defense}
 
 @app.route('/interactions', methods=['POST'])
@@ -172,7 +191,6 @@ def interactions():
         if data['type'] == InteractionType.APPLICATION_COMMAND:
             cmd = data['data']['name']
             
-            # Обработка user_id и username для ЛС и серверов
             if 'member' in data and 'user' in data['member']:
                 user_id = int(data['member']['user']['id'])
                 username = data['member']['user']['username']
@@ -187,7 +205,7 @@ def interactions():
             player = get_player(user_id)
 
             if cmd == "status":
-                stats = get_stats(user_id)
+                stats = get_stats(user_id, player)
                 msg = (
                     f"🌀 {player['username']} | Уровень {player['level']}\n"
                     f"🧠 Рассудок: {player['sanity']}/{player['max_sanity']}\n"
@@ -268,13 +286,12 @@ def interactions():
                 cur.close()
                 conn.close()
 
-                if boss["drops"] and random.random() < 0.6:
+                drop = None
+                if boss["drops"] and random.random() < 0.7:  # 70% шанс дропа
                     drop = random.choice(boss["drops"])
                     add_item(user_id, drop)
-                    drop_msg = f"\n🔥 Добыча: {ITEMS[drop]['name']}"
-                else:
-                    drop_msg = ""
 
+                drop_msg = f"\n🔥 Добыча: {ITEMS[drop]['name']}" if drop else ""
                 msg = f"💀 Побеждён: {boss['name']}\n+{boss['xp']} опыта, +{boss['gold']} золота{drop_msg}"
                 print("✅ Отправлен ответ: босс")
                 return jsonify({'type': 4, 'data': {'content': msg}})
@@ -311,6 +328,41 @@ def interactions():
                 conn.close()
                 msg = f"🏆 Топ героев:\n{top}"
                 print("✅ Отправлен ответ: лидерборд")
+                return jsonify({'type': 4, 'data': {'content': msg}})
+
+            elif cmd == "open":
+                inv = get_inventory(user_id)
+                if inv.get("loot_box", 0) <= 0:
+                    return jsonify({'type': 4, 'data': {'content': "У тебя нет ящиков с добычей."}})
+
+                # Уменьшить ящик
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("UPDATE inventory SET count = count - 1 WHERE user_id = %s AND item_id = 'loot_box'", (user_id,))
+                conn.commit()
+                cur.close()
+                conn.close()
+
+                # Открыть ящик
+                possible = ["rusty_sword", "iron_sword", "leather_armor", "healing_herb"]
+                reward = random.choice(possible)
+                add_item(user_id, reward)
+
+                msg = f"🎁 Ты открыл ящик!\nПолучено: {ITEMS[reward]['name']}"
+                return jsonify({'type': 4, 'data': {'content': msg}})
+
+            elif cmd == "help":
+                msg = (
+                    "📖 **Команды бота «Эхо Цикла»**\n\n"
+                    "`/status` — показать профиль\n"
+                    "`/hunt` — охота на мобов (опыт, золото, лут)\n"
+                    "`/boss` — сражение с боссом (раз в 15–45 мин)\n"
+                    "`/equip <предмет>` — надеть оружие/доспех\n"
+                    "`/meditate` — пассивный доход (раз в час)\n"
+                    "`/open` — открыть ящик с добычей\n"
+                    "`/leaderboard` — топ игроков\n\n"
+                    "Собирай предметы, улучшай уровень — и найди выход из цикла."
+                )
                 return jsonify({'type': 4, 'data': {'content': msg}})
 
             else:
