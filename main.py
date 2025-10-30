@@ -29,13 +29,11 @@ ITEMS = {
     "loot_box": {"name": "Ящик с добычей", "type": "box", "description": "Содержит случайный предмет"}
 }
 
-# === Мобы ===
 MOBS = [
     {"name": "Теневой Страж", "xp": 15, "gold": 3, "drops": ["rusty_sword"]},
     {"name": "Хранитель Порога", "xp": 30, "gold": 8, "drops": ["iron_sword", "leather_armor"]}
 ]
 
-# === Боссы ===
 BOSSES = [
     {"name": "Эхо Ты", "level_req": 1, "xp": 100, "gold": 25, "drops": ["iron_sword", "loot_box"], "cooldown_min": 15},
     {"name": "Страж Времени", "level_req": 5, "xp": 250, "gold": 60, "drops": ["steel_blade", "iron_armor", "loot_box"], "cooldown_min": 25},
@@ -168,21 +166,19 @@ def get_stats(user_id, player=None):
     if player is None:
         player = get_player(user_id)
     equip = get_equipment(user_id)
-    base_bonus = player["level"] // 5  # +1 каждые 5 уровней
+    base_bonus = player["level"] // 5
     attack = base_bonus + ITEMS.get(equip["weapon"], {}).get("attack", 0)
     defense = base_bonus + ITEMS.get(equip["armor"], {}).get("defense", 0)
-    # Минимум 1
-    attack = max(1, attack)
-    defense = max(1, defense)
-    return {"attack": attack, "defense": defense}
+    return {"attack": max(1, attack), "defense": max(1, defense)}
 
 @app.route('/interactions', methods=['POST'])
 @verify_key_decorator(DISCORD_PUBLIC_KEY)
 def interactions():
-    print("\n🔄 ——— НОВЫЙ ЗАПРОС ОТ DISCORD ———")
+    print("\n" + "="*50)
+    print("🔄 НОВЫЙ ЗАПРОС ОТ DISCORD")
     try:
         data = request.json
-        print("📦 Тело запроса:", data)
+        print("📦 Полученные данные:", data)
 
         if data['type'] == InteractionType.PING:
             print("🏓 Ответ на PING")
@@ -190,20 +186,25 @@ def interactions():
 
         if data['type'] == InteractionType.APPLICATION_COMMAND:
             cmd = data['data']['name']
-            
+            print(f"💬 Команда: /{cmd}")
+
+            # Безопасное извлечение user_id и username
             if 'member' in data and 'user' in data['member']:
                 user_id = int(data['member']['user']['id'])
                 username = data['member']['user']['username']
-            else:
+            elif 'user' in data:
                 user_id = int(data['user']['id'])
                 username = data['user']['username']
-            
+            else:
+                print("❌ Не удалось определить пользователя")
+                return jsonify({'type': 4, 'data': {'content': "Не удалось определить пользователя."}})
+
             print(f"👤 Пользователь: {username} ({user_id})")
-            print(f"💬 Команда: /{cmd}")
 
             create_player(user_id, username)
             player = get_player(user_id)
 
+            # Обработка команд
             if cmd == "status":
                 stats = get_stats(user_id, player)
                 msg = (
@@ -212,8 +213,6 @@ def interactions():
                     f"⭐ Опыт: {player['xp']} | 💰 Золото: {player['gold']}\n"
                     f"⚔️ Атака: {stats['attack']} | 🛡 Защита: {stats['defense']}"
                 )
-                print("✅ Отправлен ответ: профиль")
-                return jsonify({'type': 4, 'data': {'content': msg}})
 
             elif cmd == "hunt":
                 mob = random.choice(MOBS)
@@ -223,9 +222,7 @@ def interactions():
 
                 conn = get_db()
                 cur = conn.cursor()
-                cur.execute("""
-                    UPDATE players SET xp = xp + %s, gold = gold + %s WHERE user_id = %s
-                """, (xp_gain, gold_gain, user_id))
+                cur.execute("UPDATE players SET xp = xp + %s, gold = gold + %s WHERE user_id = %s", (xp_gain, gold_gain, user_id))
                 conn.commit()
                 cur.close()
                 conn.close()
@@ -235,31 +232,20 @@ def interactions():
                     drop_msg = f"\n📦 Добыча: {ITEMS[drop]['name']}"
                 else:
                     drop_msg = ""
-
                 msg = f"⚔️ Убит: {mob['name']}\n+{xp_gain} опыта, +{gold_gain} золота{drop_msg}"
-                print("✅ Отправлен ответ: охота")
-                return jsonify({'type': 4, 'data': {'content': msg}})
 
             elif cmd == "equip":
                 if 'options' not in data['data'] or not data['data']['options']:
                     msg = "Укажи предмет: `/equip <название>`"
-                    print("⚠️ Ошибка: не указан предмет")
-                    return jsonify({'type': 4, 'data': {'content': msg}})
-
-                item_name = data['data']['options'][0]['value']
-                item_id = item_name.lower().replace(" ", "_")
-                if item_id not in ITEMS:
-                    msg = "Такого предмета нет."
-                    print(f"⚠️ Неизвестный предмет: {item_id}")
-                    return jsonify({'type': 4, 'data': {'content': msg}})
-
-                if equip_item(user_id, item_id):
-                    msg = f"✅ Экипировано: {ITEMS[item_id]['name']}"
-                    print(f"✅ Экипировано: {item_id}")
                 else:
-                    msg = "Нельзя экипировать этот предмет."
-                    print(f"⚠️ Не удалось экипировать: {item_id}")
-                return jsonify({'type': 4, 'data': {'content': msg}})
+                    item_name = data['data']['options'][0]['value']
+                    item_id = item_name.lower().replace(" ", "_")
+                    if item_id not in ITEMS:
+                        msg = "Такого предмета нет."
+                    elif equip_item(user_id, item_id):
+                        msg = f"✅ Экипировано: {ITEMS[item_id]['name']}"
+                    else:
+                        msg = "Нельзя экипировать этот предмет."
 
             elif cmd == "boss":
                 now = datetime.utcnow()
@@ -267,113 +253,93 @@ def interactions():
                 eligible_bosses = [b for b in BOSSES if player["level"] >= b["level_req"]]
                 if not eligible_bosses:
                     msg = "Ты ещё не готов к боссам."
-                    print("⚠️ Уровень слишком низкий")
-                    return jsonify({'type': 4, 'data': {'content': msg}})
+                else:
+                    boss = eligible_bosses[-1]
+                    if last_fight and now - last_fight < timedelta(minutes=boss["cooldown_min"]):
+                        remaining = boss["cooldown_min"] - (now - last_fight).total_seconds() // 60
+                        msg = f"Босс доступен через {int(remaining)} мин."
+                    else:
+                        conn = get_db()
+                        cur = conn.cursor()
+                        cur.execute("UPDATE players SET xp = xp + %s, gold = gold + %s, last_boss_fight = %s WHERE user_id = %s", (boss["xp"], boss["gold"], now, user_id))
+                        conn.commit()
+                        cur.close()
+                        conn.close()
 
-                boss = eligible_bosses[-1]
-                if last_fight and now - last_fight < timedelta(minutes=boss["cooldown_min"]):
-                    remaining = boss["cooldown_min"] - (now - last_fight).total_seconds() // 60
-                    msg = f"Босс доступен через {int(remaining)} мин."
-                    print(f"⏳ Кулдаун: {remaining} мин")
-                    return jsonify({'type': 4, 'data': {'content': msg}})
-
-                conn = get_db()
-                cur = conn.cursor()
-                cur.execute("""
-                    UPDATE players SET xp = xp + %s, gold = gold + %s, last_boss_fight = %s WHERE user_id = %s
-                """, (boss["xp"], boss["gold"], now, user_id))
-                conn.commit()
-                cur.close()
-                conn.close()
-
-                drop = None
-                if boss["drops"] and random.random() < 0.7:  # 70% шанс дропа
-                    drop = random.choice(boss["drops"])
-                    add_item(user_id, drop)
-
-                drop_msg = f"\n🔥 Добыча: {ITEMS[drop]['name']}" if drop else ""
-                msg = f"💀 Побеждён: {boss['name']}\n+{boss['xp']} опыта, +{boss['gold']} золота{drop_msg}"
-                print("✅ Отправлен ответ: босс")
-                return jsonify({'type': 4, 'data': {'content': msg}})
+                        drop = None
+                        if boss["drops"] and random.random() < 0.7:
+                            drop = random.choice(boss["drops"])
+                            add_item(user_id, drop)
+                        drop_msg = f"\n🔥 Добыча: {ITEMS[drop]['name']}" if drop else ""
+                        msg = f"💀 Побеждён: {boss['name']}\n+{boss['xp']} опыта, +{boss['gold']} золота{drop_msg}"
 
             elif cmd == "meditate":
                 now = datetime.utcnow()
                 last = player["last_meditation"]
                 if last and now - last < timedelta(hours=1):
                     msg = "Медитация доступна раз в час."
-                    print("⏳ Медитация на кулдауне")
-                    return jsonify({'type': 4, 'data': {'content': msg}})
-
-                conn = get_db()
-                cur = conn.cursor()
-                cur.execute("""
-                    UPDATE players SET gold = gold + 5, last_meditation = %s WHERE user_id = %s
-                """, (now, user_id))
-                conn.commit()
-                cur.close()
-                conn.close()
-                msg = "🕯️ Ты медитировал. +5 золота."
-                print("✅ Отправлен ответ: медитация")
-                return jsonify({'type': 4, 'data': {'content': msg}})
+                else:
+                    conn = get_db()
+                    cur = conn.cursor()
+                    cur.execute("UPDATE players SET gold = gold + 5, last_meditation = %s WHERE user_id = %s", (now, user_id))
+                    conn.commit()
+                    cur.close()
+                    conn.close()
+                    msg = "🕯️ Ты медитировал. +5 золота."
 
             elif cmd == "leaderboard":
                 conn = get_db()
                 cur = conn.cursor()
-                cur.execute("""
-                    SELECT username, level, xp FROM players ORDER BY xp DESC LIMIT 5
-                """)
+                cur.execute("SELECT username, level, xp FROM players ORDER BY xp DESC LIMIT 5")
                 rows = cur.fetchall()
                 top = "\n".join([f"{i+1}. {r[0]} (ур. {r[1]}, {r[2]} опыта)" for i, r in enumerate(rows)])
                 cur.close()
                 conn.close()
                 msg = f"🏆 Топ героев:\n{top}"
-                print("✅ Отправлен ответ: лидерборд")
-                return jsonify({'type': 4, 'data': {'content': msg}})
 
             elif cmd == "open":
                 inv = get_inventory(user_id)
                 if inv.get("loot_box", 0) <= 0:
-                    return jsonify({'type': 4, 'data': {'content': "У тебя нет ящиков с добычей."}})
+                    msg = "У тебя нет ящиков с добычей."
+                else:
+                    conn = get_db()
+                    cur = conn.cursor()
+                    cur.execute("UPDATE inventory SET count = count - 1 WHERE user_id = %s AND item_id = 'loot_box'", (user_id,))
+                    conn.commit()
+                    cur.close()
+                    conn.close()
 
-                # Уменьшить ящик
-                conn = get_db()
-                cur = conn.cursor()
-                cur.execute("UPDATE inventory SET count = count - 1 WHERE user_id = %s AND item_id = 'loot_box'", (user_id,))
-                conn.commit()
-                cur.close()
-                conn.close()
-
-                # Открыть ящик
-                possible = ["rusty_sword", "iron_sword", "leather_armor", "healing_herb"]
-                reward = random.choice(possible)
-                add_item(user_id, reward)
-
-                msg = f"🎁 Ты открыл ящик!\nПолучено: {ITEMS[reward]['name']}"
-                return jsonify({'type': 4, 'data': {'content': msg}})
+                    reward = random.choice(["rusty_sword", "iron_sword", "leather_armor", "healing_herb"])
+                    add_item(user_id, reward)
+                    msg = f"🎁 Ты открыл ящик!\nПолучено: {ITEMS[reward]['name']}"
 
             elif cmd == "help":
                 msg = (
                     "📖 **Команды бота «Эхо Цикла»**\n\n"
                     "`/status` — показать профиль\n"
-                    "`/hunt` — охота на мобов (опыт, золото, лут)\n"
-                    "`/boss` — сражение с боссом (раз в 15–45 мин)\n"
+                    "`/hunt` — охота на мобов\n"
+                    "`/boss` — сражение с боссом\n"
                     "`/equip <предмет>` — надеть оружие/доспех\n"
-                    "`/meditate` — пассивный доход (раз в час)\n"
+                    "`/meditate` — пассивный доход\n"
                     "`/open` — открыть ящик с добычей\n"
                     "`/leaderboard` — топ игроков\n\n"
                     "Собирай предметы, улучшай уровень — и найди выход из цикла."
                 )
-                return jsonify({'type': 4, 'data': {'content': msg}})
 
             else:
                 msg = "Неизвестная команда."
-                print(f"⚠️ Неизвестная команда: {cmd}")
-                return jsonify({'type': 4, 'data': {'content': msg}})
+
+            # Убедимся, что msg — строка
+            if not isinstance(msg, str):
+                msg = "Ошибка: неверный формат ответа"
+
+            print(f"✅ Отправка ответа: {msg[:60]}...")
+            return jsonify({'type': 4, 'data': {'content': msg}})
 
     except Exception as e:
-        print("❌ ОШИБКА В ОБРАБОТКЕ ЗАПРОСА:")
-        print(traceback.format_exc())
-        return jsonify({'type': 4, 'data': {'content': "Произошла ошибка."}})
+        print("❌ КРИТИЧЕСКАЯ ОШИБКА:")
+        traceback.print_exc()
+        return jsonify({'type': 4, 'data': {'content': "Произошла внутренняя ошибка."}})
 
     return jsonify({'type': InteractionResponseType.PONG})
 
@@ -382,6 +348,7 @@ with app.app_context():
 
 port = int(os.environ.get('PORT', 10000))
 app.run(host='0.0.0.0', port=port)
+
 
 
 
