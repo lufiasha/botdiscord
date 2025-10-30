@@ -174,10 +174,16 @@ def interactions():
             print("🏓 Ответ на PING")
             return jsonify({'type': InteractionResponseType.PONG})
 
-        if data['type'] == InteractionType.APPLICATION_COMMAND:
+               if data['type'] == InteractionType.APPLICATION_COMMAND:
             cmd = data['data']['name']
-            user_id = int(data['member']['user']['id'])
-            username = data['member']['user']['username']
+            # Получаем user_id и username из member (если на сервере) или user (если в ЛС)
+            member_data = data.get('member')
+            if member_data:
+                user_id = int(member_data['user']['id'])
+                username = member_data['user']['username']
+            else:
+                user_id = int(data['user']['id'])
+                username = data['user']['username']
             print(f"👤 Пользователь: {username} ({user_id})")
             print(f"💬 Команда: /{cmd}")
 
@@ -329,5 +335,6 @@ with app.app_context():
 
 port = int(os.environ.get('PORT', 10000))
 app.run(host='0.0.0.0', port=port)
+
 
 
