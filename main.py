@@ -9,7 +9,9 @@ from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
-DISCORD_PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY")
+# === Discord Public Key из твоего Developer Portal ===
+DISCORD_PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY", "34d3c6086fed9cb712e1bc84e4b9ea82aa29eeb977815e115659102509a23c31")
+
 if not DISCORD_PUBLIC_KEY:
     raise ValueError("❌ DISCORD_PUBLIC_KEY не установлен")
 
@@ -30,7 +32,7 @@ MOBS = [
     {"name": "Хранитель Порога", "xp": 30, "gold": 8, "drops": ["iron_sword", "leather_armor"]}
 ]
 
-# === Боссы (доступны по уровню и кулдауну) ===
+# === Боссы ===
 BOSSES = [
     {"name": "Эхо Ты", "level_req": 1, "xp": 100, "gold": 25, "drops": ["iron_sword"], "cooldown_min": 15},
     {"name": "Страж Времени", "level_req": 5, "xp": 250, "gold": 60, "drops": ["steel_blade", "iron_armor"], "cooldown_min": 25},
@@ -38,9 +40,12 @@ BOSSES = [
     {"name": "Циклоп", "level_req": 15, "xp": 1000, "gold": 250, "drops": ["obsidian_plate", "steel_blade"], "cooldown_min": 45}
 ]
 
-# === БД ===
+# === Подключение к БД ===
 def get_db():
-    url = urlparse(os.getenv("DATABASE_URL"))
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        raise ValueError("❌ DATABASE_URL не установлен в Render")
+    url = urlparse(db_url)
     return psycopg2.connect(
         host=url.hostname,
         port=url.port,
@@ -49,6 +54,7 @@ def get_db():
         password=url.password
     )
 
+# === Инициализация БД ===
 def init_db():
     conn = get_db()
     cur = conn.cursor()
@@ -82,6 +88,18 @@ def init_db():
     cur.close()
     conn.close()
 
+# === Вспомогательные функции ===
+def create_player(user_id, username):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO players (user_id, username) VALUES (%s, %s) ON CONFLICT DO NOTHING;
+        INSERT INTO equipment (user_id) VALUES (%s) ON CONFLICT DO NOTHING;
+    """, (user_id, username, user_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+
 def get_player(user_id):
     conn = get_db()
     cur = conn.cursor()
@@ -96,17 +114,6 @@ def get_player(user_id):
         "gold": row[4], "sanity": row[5], "max_sanity": row[6],
         "last_meditation": row[7], "last_boss_fight": row[8]
     }
-
-def create_player(user_id, username):
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO players (user_id, username) VALUES (%s, %s) ON CONFLICT DO NOTHING;
-        INSERT INTO equipment (user_id) VALUES (%s) ON CONFLICT DO NOTHING;
-    """, (user_id, username, user_id))
-    conn.commit()
-    cur.close()
-    conn.close()
 
 def add_item(user_id, item_id, count=1):
     conn = get_db()
@@ -153,7 +160,7 @@ def get_stats(user_id):
     defense = ITEMS.get(equip["armor"], {}).get("defense", 0)
     return {"attack": attack, "defense": defense}
 
-# === Команды ===
+# === Обработка команд ===
 @app.route('/interactions', methods=['POST'])
 @verify_key_decorator(DISCORD_PUBLIC_KEY)
 def interactions():
@@ -201,11 +208,9 @@ def interactions():
             return jsonify({'type': 4, 'data': {'content': msg}})
 
         elif cmd == "equip":
-            # Получаем опцию (название предмета)
             if 'options' not in data['data'] or not data['data']['options']:
                 return jsonify({'type': 4, 'data': {'content': "Укажи предмет: `/equip <название>`"}})
             item_name = data['data']['options'][0]['value']
-            # Нормализуем: заменяем пробелы на подчёркивания и приводим к нижнему
             item_id = item_name.lower().replace(" ", "_")
             if item_id not in ITEMS:
                 return jsonify({'type': 4, 'data': {'content': "Такого предмета нет."}})
@@ -218,19 +223,15 @@ def interactions():
             now = datetime.utcnow()
             last_fight = player["last_boss_fight"]
 
-            # Определяем подходящего босса по уровню
             eligible_bosses = [b for b in BOSSES if player["level"] >= b["level_req"]]
             if not eligible_bosses:
                 return jsonify({'type': 4, 'data': {'content': "Ты ещё не готов к боссам."}})
 
-            boss = eligible_bosses[-1]  # самый сильный доступный
-
-            # Проверка кулдауна
+            boss = eligible_bosses[-1]
             if last_fight and now - last_fight < timedelta(minutes=boss["cooldown_min"]):
                 remaining = boss["cooldown_min"] - (now - last_fight).total_seconds() // 60
                 return jsonify({'type': 4, 'data': {'content': f"Босс доступен через {int(remaining)} мин."}})
 
-            # Победа гарантирована (PvE)
             conn = get_db()
             cur = conn.cursor()
             cur.execute("""
@@ -240,7 +241,6 @@ def interactions():
             cur.close()
             conn.close()
 
-            # Дроп
             if boss["drops"] and random.random() < 0.6:
                 drop = random.choice(boss["drops"])
                 add_item(user_id, drop)
@@ -283,9 +283,10 @@ def interactions():
 
     return jsonify({'type': InteractionResponseType.PONG})
 
-# Инициализация
+# === Запуск ===
 with app.app_context():
     init_db()
 
 port = int(os.environ.get('PORT', 10000))
 app.run(host='0.0.0.0', port=port)
+
