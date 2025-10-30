@@ -6,16 +6,19 @@ from urllib.parse import urlparse
 from flask import Flask, request, jsonify
 from discord_interactions import verify_key_decorator, InteractionType, InteractionResponseType
 from datetime import datetime, timedelta
+import traceback  # для вывода полной ошибки
 
 app = Flask(__name__)
 
-# === Discord Public Key из твоего Developer Portal ===
-DISCORD_PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY", "34d3c6086fed9cb712e1bc84a4b9ea82aa29eeb977815e115659102509a23c31")
+# === Discord Public Key ===
+DISCORD_PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY", "34d3c6086fed9cb712e1bc84e4b9ea82aa29eeb977815e115659102509a23c31")
 
 if not DISCORD_PUBLIC_KEY:
     raise ValueError("❌ DISCORD_PUBLIC_KEY не установлен")
 
-# === Предметы ===
+print("✅ Бот запущен. Ожидание запросов...")
+
+# === Предметы и мобы ===
 ITEMS = {
     "rusty_sword": {"name": "Ржавый меч", "type": "weapon", "attack": 5},
     "iron_sword": {"name": "Железный меч", "type": "weapon", "attack": 12},
@@ -26,13 +29,11 @@ ITEMS = {
     "healing_herb": {"name": "Целебная трава", "type": "consumable", "effect": "heal_20"}
 }
 
-# === Мобы ===
 MOBS = [
     {"name": "Теневой Страж", "xp": 15, "gold": 3, "drops": ["rusty_sword"]},
     {"name": "Хранитель Порога", "xp": 30, "gold": 8, "drops": ["iron_sword", "leather_armor"]}
 ]
 
-# === Боссы ===
 BOSSES = [
     {"name": "Эхо Ты", "level_req": 1, "xp": 100, "gold": 25, "drops": ["iron_sword"], "cooldown_min": 15},
     {"name": "Страж Времени", "level_req": 5, "xp": 250, "gold": 60, "drops": ["steel_blade", "iron_armor"], "cooldown_min": 25},
@@ -40,7 +41,7 @@ BOSSES = [
     {"name": "Циклоп", "level_req": 15, "xp": 1000, "gold": 250, "drops": ["obsidian_plate", "steel_blade"], "cooldown_min": 45}
 ]
 
-# === Подключение к БД ===
+# === БД ===
 def get_db():
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
@@ -54,7 +55,6 @@ def get_db():
         password=url.password
     )
 
-# === Инициализация БД ===
 def init_db():
     conn = get_db()
     cur = conn.cursor()
@@ -87,8 +87,9 @@ def init_db():
     conn.commit()
     cur.close()
     conn.close()
+    print("✅ БД инициализирована")
 
-# === Вспомогательные функции ===
+# === Вспомогательные функции (без изменений) ===
 def create_player(user_id, username):
     conn = get_db()
     cur = conn.cursor()
@@ -160,126 +161,165 @@ def get_stats(user_id):
     defense = ITEMS.get(equip["armor"], {}).get("defense", 0)
     return {"attack": attack, "defense": defense}
 
-# === Обработка команд ===
+# === Обработка команд с логированием ===
 @app.route('/interactions', methods=['POST'])
 @verify_key_decorator(DISCORD_PUBLIC_KEY)
 def interactions():
-    data = request.json
-    if data['type'] == InteractionType.APPLICATION_COMMAND:
-        cmd = data['data']['name']
-        user_id = int(data['member']['user']['id'])
-        username = data['member']['user']['username']
+    print("\n🔄 ——— НОВЫЙ ЗАПРОС ОТ DISCORD ———")
+    try:
+        data = request.json
+        print("📦 Тело запроса:", data)
 
-        create_player(user_id, username)
-        player = get_player(user_id)
+        if data['type'] == InteractionType.PING:
+            print("🏓 Ответ на PING")
+            return jsonify({'type': InteractionResponseType.PONG})
 
-        if cmd == "status":
-            stats = get_stats(user_id)
-            msg = (
-                f"🌀 {player['username']} | Уровень {player['level']}\n"
-                f"🧠 Рассудок: {player['sanity']}/{player['max_sanity']}\n"
-                f"⭐ Опыт: {player['xp']} | 💰 Золото: {player['gold']}\n"
-                f"⚔️ Атака: {stats['attack']} | 🛡 Защита: {stats['defense']}"
-            )
-            return jsonify({'type': 4, 'data': {'content': msg}})
+        if data['type'] == InteractionType.APPLICATION_COMMAND:
+            cmd = data['data']['name']
+            user_id = int(data['member']['user']['id'])
+            username = data['member']['user']['username']
+            print(f"👤 Пользователь: {username} ({user_id})")
+            print(f"💬 Команда: /{cmd}")
 
-        elif cmd == "hunt":
-            mob = random.choice(MOBS)
-            xp_gain = mob["xp"]
-            gold_gain = mob["gold"]
-            drop = random.choice(mob["drops"]) if random.random() < 0.3 else None
+            create_player(user_id, username)
+            player = get_player(user_id)
 
-            conn = get_db()
-            cur = conn.cursor()
-            cur.execute("""
-                UPDATE players SET xp = xp + %s, gold = gold + %s WHERE user_id = %s
-            """, (xp_gain, gold_gain, user_id))
-            conn.commit()
-            cur.close()
-            conn.close()
+            if cmd == "status":
+                stats = get_stats(user_id)
+                msg = (
+                    f"🌀 {player['username']} | Уровень {player['level']}\n"
+                    f"🧠 Рассудок: {player['sanity']}/{player['max_sanity']}\n"
+                    f"⭐ Опыт: {player['xp']} | 💰 Золото: {player['gold']}\n"
+                    f"⚔️ Атака: {stats['attack']} | 🛡 Защита: {stats['defense']}"
+                )
+                print("✅ Отправлен ответ: профиль")
+                return jsonify({'type': 4, 'data': {'content': msg}})
 
-            if drop:
-                add_item(user_id, drop)
-                drop_msg = f"\n📦 Добыча: {ITEMS[drop]['name']}"
+            elif cmd == "hunt":
+                mob = random.choice(MOBS)
+                xp_gain = mob["xp"]
+                gold_gain = mob["gold"]
+                drop = random.choice(mob["drops"]) if random.random() < 0.3 else None
+
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("""
+                    UPDATE players SET xp = xp + %s, gold = gold + %s WHERE user_id = %s
+                """, (xp_gain, gold_gain, user_id))
+                conn.commit()
+                cur.close()
+                conn.close()
+
+                if drop:
+                    add_item(user_id, drop)
+                    drop_msg = f"\n📦 Добыча: {ITEMS[drop]['name']}"
+                else:
+                    drop_msg = ""
+
+                msg = f"⚔️ Убит: {mob['name']}\n+{xp_gain} опыта, +{gold_gain} золота{drop_msg}"
+                print("✅ Отправлен ответ: охота")
+                return jsonify({'type': 4, 'data': {'content': msg}})
+
+            elif cmd == "equip":
+                if 'options' not in data['data'] or not data['data']['options']:
+                    msg = "Укажи предмет: `/equip <название>`"
+                    print("⚠️ Ошибка: не указан предмет")
+                    return jsonify({'type': 4, 'data': {'content': msg}})
+
+                item_name = data['data']['options'][0]['value']
+                item_id = item_name.lower().replace(" ", "_")
+                if item_id not in ITEMS:
+                    msg = "Такого предмета нет."
+                    print(f"⚠️ Неизвестный предмет: {item_id}")
+                    return jsonify({'type': 4, 'data': {'content': msg}})
+
+                if equip_item(user_id, item_id):
+                    msg = f"✅ Экипировано: {ITEMS[item_id]['name']}"
+                    print(f"✅ Экипировано: {item_id}")
+                else:
+                    msg = "Нельзя экипировать этот предмет."
+                    print(f"⚠️ Не удалось экипировать: {item_id}")
+                return jsonify({'type': 4, 'data': {'content': msg}})
+
+            elif cmd == "boss":
+                now = datetime.utcnow()
+                last_fight = player["last_boss_fight"]
+                eligible_bosses = [b for b in BOSSES if player["level"] >= b["level_req"]]
+                if not eligible_bosses:
+                    msg = "Ты ещё не готов к боссам."
+                    print("⚠️ Уровень слишком низкий")
+                    return jsonify({'type': 4, 'data': {'content': msg}})
+
+                boss = eligible_bosses[-1]
+                if last_fight and now - last_fight < timedelta(minutes=boss["cooldown_min"]):
+                    remaining = boss["cooldown_min"] - (now - last_fight).total_seconds() // 60
+                    msg = f"Босс доступен через {int(remaining)} мин."
+                    print(f"⏳ Кулдаун: {remaining} мин")
+                    return jsonify({'type': 4, 'data': {'content': msg}})
+
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("""
+                    UPDATE players SET xp = xp + %s, gold = gold + %s, last_boss_fight = %s WHERE user_id = %s
+                """, (boss["xp"], boss["gold"], now, user_id))
+                conn.commit()
+                cur.close()
+                conn.close()
+
+                if boss["drops"] and random.random() < 0.6:
+                    drop = random.choice(boss["drops"])
+                    add_item(user_id, drop)
+                    drop_msg = f"\n🔥 Добыча: {ITEMS[drop]['name']}"
+                else:
+                    drop_msg = ""
+
+                msg = f"💀 Побеждён: {boss['name']}\n+{boss['xp']} опыта, +{boss['gold']} золота{drop_msg}"
+                print("✅ Отправлен ответ: босс")
+                return jsonify({'type': 4, 'data': {'content': msg}})
+
+            elif cmd == "meditate":
+                now = datetime.utcnow()
+                last = player["last_meditation"]
+                if last and now - last < timedelta(hours=1):
+                    msg = "Медитация доступна раз в час."
+                    print("⏳ Медитация на кулдауне")
+                    return jsonify({'type': 4, 'data': {'content': msg}})
+
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("""
+                    UPDATE players SET gold = gold + 5, last_meditation = %s WHERE user_id = %s
+                """, (now, user_id))
+                conn.commit()
+                cur.close()
+                conn.close()
+                msg = "🕯️ Ты медитировал. +5 золота."
+                print("✅ Отправлен ответ: медитация")
+                return jsonify({'type': 4, 'data': {'content': msg}})
+
+            elif cmd == "leaderboard":
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT username, level, xp FROM players ORDER BY xp DESC LIMIT 5
+                """)
+                rows = cur.fetchall()
+                top = "\n".join([f"{i+1}. {r[0]} (ур. {r[1]}, {r[2]} опыта)" for i, r in enumerate(rows)])
+                cur.close()
+                conn.close()
+                msg = f"🏆 Топ героев:\n{top}"
+                print("✅ Отправлен ответ: лидерборд")
+                return jsonify({'type': 4, 'data': {'content': msg}})
+
             else:
-                drop_msg = ""
+                msg = "Неизвестная команда."
+                print(f"⚠️ Неизвестная команда: {cmd}")
+                return jsonify({'type': 4, 'data': {'content': msg}})
 
-            msg = f"⚔️ Убит: {mob['name']}\n+{xp_gain} опыта, +{gold_gain} золота{drop_msg}"
-            return jsonify({'type': 4, 'data': {'content': msg}})
-
-        elif cmd == "equip":
-            if 'options' not in data['data'] or not data['data']['options']:
-                return jsonify({'type': 4, 'data': {'content': "Укажи предмет: `/equip <название>`"}})
-            item_name = data['data']['options'][0]['value']
-            item_id = item_name.lower().replace(" ", "_")
-            if item_id not in ITEMS:
-                return jsonify({'type': 4, 'data': {'content': "Такого предмета нет."}})
-            if equip_item(user_id, item_id):
-                return jsonify({'type': 4, 'data': {'content': f"✅ Экипировано: {ITEMS[item_id]['name']}"}})
-            else:
-                return jsonify({'type': 4, 'data': {'content': "Нельзя экипировать этот предмет."}})
-
-        elif cmd == "boss":
-            now = datetime.utcnow()
-            last_fight = player["last_boss_fight"]
-
-            eligible_bosses = [b for b in BOSSES if player["level"] >= b["level_req"]]
-            if not eligible_bosses:
-                return jsonify({'type': 4, 'data': {'content': "Ты ещё не готов к боссам."}})
-
-            boss = eligible_bosses[-1]
-            if last_fight and now - last_fight < timedelta(minutes=boss["cooldown_min"]):
-                remaining = boss["cooldown_min"] - (now - last_fight).total_seconds() // 60
-                return jsonify({'type': 4, 'data': {'content': f"Босс доступен через {int(remaining)} мин."}})
-
-            conn = get_db()
-            cur = conn.cursor()
-            cur.execute("""
-                UPDATE players SET xp = xp + %s, gold = gold + %s, last_boss_fight = %s WHERE user_id = %s
-            """, (boss["xp"], boss["gold"], now, user_id))
-            conn.commit()
-            cur.close()
-            conn.close()
-
-            if boss["drops"] and random.random() < 0.6:
-                drop = random.choice(boss["drops"])
-                add_item(user_id, drop)
-                drop_msg = f"\n🔥 Добыча: {ITEMS[drop]['name']}"
-            else:
-                drop_msg = ""
-
-            msg = f"💀 Побеждён: {boss['name']}\n+{boss['xp']} опыта, +{boss['gold']} золота{drop_msg}"
-            return jsonify({'type': 4, 'data': {'content': msg}})
-
-        elif cmd == "meditate":
-            now = datetime.utcnow()
-            last = player["last_meditation"]
-            if last and now - last < timedelta(hours=1):
-                return jsonify({'type': 4, 'data': {'content': "Медитация доступна раз в час."}})
-            conn = get_db()
-            cur = conn.cursor()
-            cur.execute("""
-                UPDATE players SET gold = gold + 5, last_meditation = %s WHERE user_id = %s
-            """, (now, user_id))
-            conn.commit()
-            cur.close()
-            conn.close()
-            return jsonify({'type': 4, 'data': {'content': "🕯️ Ты медитировал. +5 золота."}})
-
-        elif cmd == "leaderboard":
-            conn = get_db()
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT username, level, xp FROM players ORDER BY xp DESC LIMIT 5
-            """)
-            rows = cur.fetchall()
-            top = "\n".join([f"{i+1}. {r[0]} (ур. {r[1]}, {r[2]} опыта)" for i, r in enumerate(rows)])
-            cur.close()
-            conn.close()
-            return jsonify({'type': 4, 'data': {'content': f"🏆 Топ героев:\n{top}"}})
-
-        else:
-            return jsonify({'type': 4, 'data': {'content': "Неизвестная команда."}})
+    except Exception as e:
+        print("❌ ОШИБКА В ОБРАБОТКЕ ЗАПРОСА:")
+        print(traceback.format_exc())
+        return jsonify({'type': 4, 'data': {'content': "Произошла ошибка."}})
 
     return jsonify({'type': InteractionResponseType.PONG})
 
