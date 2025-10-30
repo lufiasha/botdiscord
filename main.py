@@ -2,50 +2,45 @@
 import os
 import random
 import psycopg2
-import requests
 from urllib.parse import urlparse
 from flask import Flask, request, jsonify
 from discord_interactions import verify_key_decorator, InteractionType, InteractionResponseType
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
-# === Настройки Discord ===
 DISCORD_PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY")
 if not DISCORD_PUBLIC_KEY:
-    raise ValueError("❌ DISCORD_PUBLIC_KEY не установлен в Render")
+    raise ValueError("❌ DISCORD_PUBLIC_KEY не установлен")
 
-# === Регистрация slash-команд (выполняется один раз при старте) ===
-def register_commands():
-    APP_ID = os.getenv("APP_ID")
-    BOT_TOKEN = os.getenv("BOT_TOKEN")
+# === Предметы ===
+ITEMS = {
+    "rusty_sword": {"name": "Ржавый меч", "type": "weapon", "attack": 5},
+    "iron_sword": {"name": "Железный меч", "type": "weapon", "attack": 12},
+    "steel_blade": {"name": "Стальной клинок", "type": "weapon", "attack": 20},
+    "leather_armor": {"name": "Кожаный доспех", "type": "armor", "defense": 3},
+    "iron_armor": {"name": "Железный доспех", "type": "armor", "defense": 8},
+    "obsidian_plate": {"name": "Обсидиановая броня", "type": "armor", "defense": 15},
+    "healing_herb": {"name": "Целебная трава", "type": "consumable", "effect": "heal_20"}
+}
 
-    if not APP_ID or not BOT_TOKEN:
-        print("⚠️ APP_ID или BOT_TOKEN не заданы — регистрация команд пропущена")
-        return
+# === Мобы ===
+MOBS = [
+    {"name": "Теневой Страж", "xp": 15, "gold": 3, "drops": ["rusty_sword"]},
+    {"name": "Хранитель Порога", "xp": 30, "gold": 8, "drops": ["iron_sword", "leather_armor"]}
+]
 
-    commands = [
-        {"name": "awaken", "description": "Начать новый цикл"},
-        {"name": "explore", "description": "Исследовать подвал"},
-        {"name": "rest", "description": "Отдохнуть и восстановить рассудок"}
-    ]
+# === Боссы (доступны по уровню и кулдауну) ===
+BOSSES = [
+    {"name": "Эхо Ты", "level_req": 1, "xp": 100, "gold": 25, "drops": ["iron_sword"], "cooldown_min": 15},
+    {"name": "Страж Времени", "level_req": 5, "xp": 250, "gold": 60, "drops": ["steel_blade", "iron_armor"], "cooldown_min": 25},
+    {"name": "Тень Академии", "level_req": 10, "xp": 500, "gold": 120, "drops": ["obsidian_plate"], "cooldown_min": 35},
+    {"name": "Циклоп", "level_req": 15, "xp": 1000, "gold": 250, "drops": ["obsidian_plate", "steel_blade"], "cooldown_min": 45}
+]
 
-    url = f"https://discord.com/api/v10/applications/{APP_ID}/commands"
-    headers = {"Authorization": f"Bot {BOT_TOKEN}"}
-
-    print("📤 Регистрация slash-команд...")
-    for cmd in commands:
-        try:
-            res = requests.post(url, json=cmd, headers=headers, timeout=10)
-            print(f"   /{cmd['name']} → {res.status_code}")
-        except Exception as e:
-            print(f"   Ошибка при регистрации /{cmd['name']}: {e}")
-
-# === Подключение к БД ===
-def get_db_connection():
-    db_url = os.getenv("DATABASE_URL")
-    if not db_url:
-        raise ValueError("❌ DATABASE_URL не установлен в Render")
-    url = urlparse(db_url)
+# === БД ===
+def get_db():
+    url = urlparse(os.getenv("DATABASE_URL"))
     return psycopg2.connect(
         host=url.hostname,
         port=url.port,
@@ -54,157 +49,243 @@ def get_db_connection():
         password=url.password
     )
 
-# === Создание таблицы при старте ===
 def init_db():
-    conn = get_db_connection()
+    conn = get_db()
     cur = conn.cursor()
     cur.execute("""
     CREATE TABLE IF NOT EXISTS players (
         user_id BIGINT PRIMARY KEY,
         username TEXT,
-        cycle INT DEFAULT 1,
+        level INT DEFAULT 1,
+        xp INT DEFAULT 0,
+        gold INT DEFAULT 0,
         sanity INT DEFAULT 100,
         max_sanity INT DEFAULT 100,
-        memories INT DEFAULT 0,
+        last_meditation TIMESTAMP,
+        last_boss_fight TIMESTAMP,
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS inventory (
+        user_id BIGINT,
+        item_id TEXT,
+        count INT DEFAULT 1,
+        PRIMARY KEY (user_id, item_id)
+    );
+    CREATE TABLE IF NOT EXISTS equipment (
+        user_id BIGINT PRIMARY KEY,
+        weapon TEXT,
+        armor TEXT
     );
     """)
     conn.commit()
     cur.close()
     conn.close()
-    print("✅ Таблица players готова")
 
-# === Получить или создать игрока ===
-def get_or_create_player(user_id, username):
-    conn = get_db_connection()
+def get_player(user_id):
+    conn = get_db()
     cur = conn.cursor()
-    cur.execute(
-        "SELECT user_id, cycle, sanity, max_sanity, memories FROM players WHERE user_id = %s",
-        (user_id,)
-    )
+    cur.execute("SELECT * FROM players WHERE user_id = %s", (user_id,))
     row = cur.fetchone()
-    if row:
-        player = {
-            "user_id": row[0],
-            "cycle": row[1],
-            "sanity": row[2],
-            "max_sanity": row[3],
-            "memories": row[4]
-        }
-    else:
-        cur.execute(
-            """INSERT INTO players (user_id, username)
-               VALUES (%s, %s)
-               RETURNING user_id, cycle, sanity, max_sanity, memories""",
-            (user_id, username)
-        )
-        row = cur.fetchone()
-        player = {
-            "user_id": row[0],
-            "cycle": row[1],
-            "sanity": row[2],
-            "max_sanity": row[3],
-            "memories": row[4]
-        }
-    conn.commit()
     cur.close()
     conn.close()
-    return player
+    if not row:
+        return None
+    return {
+        "user_id": row[0], "username": row[1], "level": row[2], "xp": row[3],
+        "gold": row[4], "sanity": row[5], "max_sanity": row[6],
+        "last_meditation": row[7], "last_boss_fight": row[8]
+    }
 
-# === Обновить данные игрока ===
-def update_player(user_id, sanity=None, memories=None, cycle=None, max_sanity=None):
-    updates = []
-    values = []
-    if sanity is not None:
-        updates.append("sanity = %s")
-        values.append(max(0, sanity))
-    if memories is not None:
-        updates.append("memories = %s")
-        values.append(memories)
-    if cycle is not None:
-        updates.append("cycle = %s")
-        values.append(cycle)
-    if max_sanity is not None:
-        updates.append("max_sanity = %s")
-        values.append(max_sanity)
-    if not updates:
-        return
-    values.append(user_id)
-    query = f"UPDATE players SET {', '.join(updates)}, updated_at = NOW() WHERE user_id = %s"
-    conn = get_db_connection()
+def create_player(user_id, username):
+    conn = get_db()
     cur = conn.cursor()
-    cur.execute(query, values)
+    cur.execute("""
+        INSERT INTO players (user_id, username) VALUES (%s, %s) ON CONFLICT DO NOTHING;
+        INSERT INTO equipment (user_id) VALUES (%s) ON CONFLICT DO NOTHING;
+    """, (user_id, username, user_id))
     conn.commit()
     cur.close()
     conn.close()
 
-# === Инициализация при старте ===
-with app.app_context():
-    init_db()
-    register_commands()  # ← Регистрация команд при запуске
+def add_item(user_id, item_id, count=1):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO inventory (user_id, item_id, count)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (user_id, item_id)
+        DO UPDATE SET count = inventory.count + %s;
+    """, (user_id, item_id, count, count))
+    conn.commit()
+    cur.close()
+    conn.close()
 
-# === Обработка запросов от Discord ===
+def get_equipment(user_id):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT weapon, armor FROM equipment WHERE user_id = %s", (user_id,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return {"weapon": row[0], "armor": row[1]} if row else {"weapon": None, "armor": None}
+
+def equip_item(user_id, item_id):
+    if item_id not in ITEMS:
+        return False
+    item = ITEMS[item_id]
+    conn = get_db()
+    cur = conn.cursor()
+    if item["type"] == "weapon":
+        cur.execute("UPDATE equipment SET weapon = %s WHERE user_id = %s", (item_id, user_id))
+    elif item["type"] == "armor":
+        cur.execute("UPDATE equipment SET armor = %s WHERE user_id = %s", (item_id, user_id))
+    else:
+        return False
+    conn.commit()
+    cur.close()
+    conn.close()
+    return True
+
+def get_stats(user_id):
+    equip = get_equipment(user_id)
+    attack = ITEMS.get(equip["weapon"], {}).get("attack", 0)
+    defense = ITEMS.get(equip["armor"], {}).get("defense", 0)
+    return {"attack": attack, "defense": defense}
+
+# === Команды ===
 @app.route('/interactions', methods=['POST'])
 @verify_key_decorator(DISCORD_PUBLIC_KEY)
 def interactions():
     data = request.json
     if data['type'] == InteractionType.APPLICATION_COMMAND:
-        command_name = data['data']['name']
+        cmd = data['data']['name']
         user_id = int(data['member']['user']['id'])
         username = data['member']['user']['username']
 
-        player = get_or_create_player(user_id, username)
+        create_player(user_id, username)
+        player = get_player(user_id)
 
-        if command_name == "awaken":
+        if cmd == "status":
+            stats = get_stats(user_id)
             msg = (
-                f"🌀 Цикл #{player['cycle']}\n"
+                f"🌀 {player['username']} | Уровень {player['level']}\n"
                 f"🧠 Рассудок: {player['sanity']}/{player['max_sanity']}\n"
-                f"📜 Воспоминаний: {player['memories']}\n\n"
-                "Ты просыпаешься в подвале. Стены дышат. Что дальше?"
+                f"⭐ Опыт: {player['xp']} | 💰 Золото: {player['gold']}\n"
+                f"⚔️ Атака: {stats['attack']} | 🛡 Защита: {stats['defense']}"
             )
+            return jsonify({'type': 4, 'data': {'content': msg}})
 
-        elif command_name == "explore":
-            if player['sanity'] <= 0:
-                msg = "Ты без сознания... Используй `/awaken`, чтобы начать цикл заново."
+        elif cmd == "hunt":
+            mob = random.choice(MOBS)
+            xp_gain = mob["xp"]
+            gold_gain = mob["gold"]
+            drop = random.choice(mob["drops"]) if random.random() < 0.3 else None
+
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE players SET xp = xp + %s, gold = gold + %s WHERE user_id = %s
+            """, (xp_gain, gold_gain, user_id))
+            conn.commit()
+            cur.close()
+            conn.close()
+
+            if drop:
+                add_item(user_id, drop)
+                drop_msg = f"\n📦 Добыча: {ITEMS[drop]['name']}"
             else:
-                events = [
-                    {"text": "Ты нашёл обрывок дневника! +2 воспоминания.", "memories": 2},
-                    {"text": "Стены шепчут... −10 рассудка.", "sanity": -10},
-                    {"text": "В углу — странный амулет. +5 к макс. рассудку!", "max_sanity": 5},
-                    {"text": "Ты вспомнил лицо матери... +5 воспоминаний, но больно. −15 рассудка.", "memories": 5, "sanity": -15}
-                ]
-                event = random.choice(events)
-                new_san = player['sanity'] + event.get("sanity", 0)
-                new_mem = player['memories'] + event.get("memories", 0)
-                new_max = player['max_sanity'] + event.get("max_sanity", 0)
+                drop_msg = ""
 
-                update_player(
-                    user_id,
-                    sanity=new_san,
-                    memories=new_mem,
-                    max_sanity=new_max if "max_sanity" in event else None
-                )
-                msg = event["text"]
+            msg = f"⚔️ Убит: {mob['name']}\n+{xp_gain} опыта, +{gold_gain} золота{drop_msg}"
+            return jsonify({'type': 4, 'data': {'content': msg}})
 
-        elif command_name == "rest":
-            if player['sanity'] >= player['max_sanity']:
-                msg = "Ты отдохнул... но уже в порядке."
+        elif cmd == "equip":
+            # Получаем опцию (название предмета)
+            if 'options' not in data['data'] or not data['data']['options']:
+                return jsonify({'type': 4, 'data': {'content': "Укажи предмет: `/equip <название>`"}})
+            item_name = data['data']['options'][0]['value']
+            # Нормализуем: заменяем пробелы на подчёркивания и приводим к нижнему
+            item_id = item_name.lower().replace(" ", "_")
+            if item_id not in ITEMS:
+                return jsonify({'type': 4, 'data': {'content': "Такого предмета нет."}})
+            if equip_item(user_id, item_id):
+                return jsonify({'type': 4, 'data': {'content': f"✅ Экипировано: {ITEMS[item_id]['name']}"}})
             else:
-                healed = min(20, player['max_sanity'] - player['sanity'])
-                update_player(user_id, sanity=player['sanity'] + healed)
-                msg = f"🕯️ Ты немного отдохнул. +{healed} рассудка."
+                return jsonify({'type': 4, 'data': {'content': "Нельзя экипировать этот предмет."}})
+
+        elif cmd == "boss":
+            now = datetime.utcnow()
+            last_fight = player["last_boss_fight"]
+
+            # Определяем подходящего босса по уровню
+            eligible_bosses = [b for b in BOSSES if player["level"] >= b["level_req"]]
+            if not eligible_bosses:
+                return jsonify({'type': 4, 'data': {'content': "Ты ещё не готов к боссам."}})
+
+            boss = eligible_bosses[-1]  # самый сильный доступный
+
+            # Проверка кулдауна
+            if last_fight and now - last_fight < timedelta(minutes=boss["cooldown_min"]):
+                remaining = boss["cooldown_min"] - (now - last_fight).total_seconds() // 60
+                return jsonify({'type': 4, 'data': {'content': f"Босс доступен через {int(remaining)} мин."}})
+
+            # Победа гарантирована (PvE)
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE players SET xp = xp + %s, gold = gold + %s, last_boss_fight = %s WHERE user_id = %s
+            """, (boss["xp"], boss["gold"], now, user_id))
+            conn.commit()
+            cur.close()
+            conn.close()
+
+            # Дроп
+            if boss["drops"] and random.random() < 0.6:
+                drop = random.choice(boss["drops"])
+                add_item(user_id, drop)
+                drop_msg = f"\n🔥 Добыча: {ITEMS[drop]['name']}"
+            else:
+                drop_msg = ""
+
+            msg = f"💀 Побеждён: {boss['name']}\n+{boss['xp']} опыта, +{boss['gold']} золота{drop_msg}"
+            return jsonify({'type': 4, 'data': {'content': msg}})
+
+        elif cmd == "meditate":
+            now = datetime.utcnow()
+            last = player["last_meditation"]
+            if last and now - last < timedelta(hours=1):
+                return jsonify({'type': 4, 'data': {'content': "Медитация доступна раз в час."}})
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE players SET gold = gold + 5, last_meditation = %s WHERE user_id = %s
+            """, (now, user_id))
+            conn.commit()
+            cur.close()
+            conn.close()
+            return jsonify({'type': 4, 'data': {'content': "🕯️ Ты медитировал. +5 золота."}})
+
+        elif cmd == "leaderboard":
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT username, level, xp FROM players ORDER BY xp DESC LIMIT 5
+            """)
+            rows = cur.fetchall()
+            top = "\n".join([f"{i+1}. {r[0]} (ур. {r[1]}, {r[2]} опыта)" for i, r in enumerate(rows)])
+            cur.close()
+            conn.close()
+            return jsonify({'type': 4, 'data': {'content': f"🏆 Топ героев:\n{top}"}})
 
         else:
-            msg = "Неизвестная команда."
-
-        return jsonify({
-            'type': InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-            'data': {'content': msg}
-        })
+            return jsonify({'type': 4, 'data': {'content': "Неизвестная команда."}})
 
     return jsonify({'type': InteractionResponseType.PONG})
 
-# === Запуск сервера ===
+# Инициализация
+with app.app_context():
+    init_db()
+
 port = int(os.environ.get('PORT', 10000))
 app.run(host='0.0.0.0', port=port)
